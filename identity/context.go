@@ -2,14 +2,14 @@ package identity
 
 import "context"
 
-type theUserKey struct{}
+type theKey struct{}
 
-func ContextWithIdentity(ctx context.Context, sub Identity) context.Context {
-	return context.WithValue(ctx, theUserKey{}, sub)
+func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
+	return context.WithValue(ctx, theKey{}, id)
 }
 
 func IdentityFromContext(ctx context.Context) Identity {
-	u, ok := ctx.Value(theUserKey{}).(Identity)
+	u, ok := ctx.Value(theKey{}).(Identity)
 	if ok && u != nil {
 		return u
 	}
