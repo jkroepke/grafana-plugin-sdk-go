@@ -41,7 +41,7 @@ func (codec *dataFrameCodec) IsEmpty(ptr unsafe.Pointer) bool {
 
 func (codec *dataFrameCodec) Encode(ptr unsafe.Pointer, stream *jsoniter.Stream) {
 	f := (*Frame)(ptr)
-	writeDataFrame(f, stream, true, true)
+	writeDataFrame(f, stream, true, true, FrameJSONColumns)
 }
 
 func (codec *dataFrameCodec) Decode(ptr unsafe.Pointer, iter *jsoniter.Iterator) {
@@ -68,6 +68,18 @@ const (
 	IncludeDataOnly
 	// IncludeSchemaOnly only serializes schema part of a frame.
 	IncludeSchemaOnly
+)
+
+// FrameJSONProjection - how the rows are written
+type FrameJSONProjection int
+
+const (
+	// values as columnar formats
+	FrameJSONColumns FrameJSONProjection = iota + 1
+	// by row
+	FrameJSONRows
+	// as objects
+	FrameJSONObjects
 )
 
 // FrameJSON holds a byte representation of the schema separate from the data.
@@ -114,7 +126,7 @@ func (f *FrameJSONCache) setData(frame *Frame) error {
 	stream := cfg.BorrowStream(nil)
 	defer cfg.ReturnStream(stream)
 
-	writeDataFrameData(frame, stream)
+	writeDataFrameData(frame, stream, FrameJSONColumns)
 	if stream.Error != nil {
 		return stream.Error
 	}
@@ -155,6 +167,10 @@ func (f *FrameJSONCache) MarshalJSON() ([]byte, error) {
 //
 // NOTE: the format should be considered experimental until grafana 8 is released.
 func FrameToJSON(frame *Frame, include FrameInclude) ([]byte, error) {
+	return FrameToJSONProjection(frame, include, FrameJSONColumns)
+}
+
+func FrameToJSONProjection(frame *Frame, include FrameInclude, projection FrameJSONProjection) ([]byte, error) {
 	cfg := jsoniter.ConfigCompatibleWithStandardLibrary
 	stream := cfg.BorrowStream(nil)
 	defer cfg.ReturnStream(stream)
@@ -162,7 +178,7 @@ func FrameToJSON(frame *Frame, include FrameInclude) ([]byte, error) {
 	includeSchema := (include == IncludeAll || include == IncludeSchemaOnly)
 	includeData := (include == IncludeAll || include == IncludeDataOnly)
 
-	writeDataFrame(frame, stream, includeSchema, includeData)
+	writeDataFrame(frame, stream, includeSchema, includeData, projection)
 	if stream.Error != nil {
 		return nil, stream.Error
 	}
@@ -640,7 +656,7 @@ func isSpecialEntity(v float64) (string, bool) {
 	}
 }
 
-func writeDataFrame(frame *Frame, stream *jsoniter.Stream, includeSchema bool, includeData bool) {
+func writeDataFrame(frame *Frame, stream *jsoniter.Stream, includeSchema bool, includeData bool, projection FrameJSONProjection) {
 	stream.WriteObjectStart()
 	if includeSchema {
 		stream.WriteObjectField(jsonKeySchema)
@@ -653,7 +669,7 @@ func writeDataFrame(frame *Frame, stream *jsoniter.Stream, includeSchema bool, i
 		}
 
 		stream.WriteObjectField(jsonKeyData)
-		writeDataFrameData(frame, stream)
+		writeDataFrameData(frame, stream, projection)
 	}
 	stream.WriteObjectEnd()
 }
@@ -754,7 +770,7 @@ func writeDataFrameSchema(frame *Frame, stream *jsoniter.Stream) {
 	stream.WriteObjectEnd()
 }
 
-func writeDataFrameData(frame *Frame, stream *jsoniter.Stream) {
+func writeDataFrameData(frame *Frame, stream *jsoniter.Stream, projection FrameJSONProjection) {
 	rowCount, err := frame.RowLen()
 	if err != nil {
 		stream.Error = err
@@ -766,63 +782,109 @@ func writeDataFrameData(frame *Frame, stream *jsoniter.Stream) {
 	entities := make([]*fieldEntityLookup, len(frame.Fields))
 	entityCount := 0
 
-	stream.WriteObjectField("values")
-	stream.WriteArrayStart()
-	for fidx, f := range frame.Fields {
-		if fidx > 0 {
-			stream.WriteMore()
-		}
-		isTime := f.Type().Time()
-		isFloat := f.Type() == FieldTypeFloat64 || f.Type() == FieldTypeNullableFloat64 ||
-			f.Type() == FieldTypeFloat32 || f.Type() == FieldTypeNullableFloat32
-
+	switch projection {
+	case FrameJSONRows:
+		stream.WriteObjectField("rows") // value as array
 		stream.WriteArrayStart()
 		for i := 0; i < rowCount; i++ {
 			if i > 0 {
-				stream.WriteRaw(",")
+				stream.WriteMore()
 			}
-			if v, ok := f.ConcreteAt(i); ok {
-				switch {
-				case isTime:
-					vTyped := v.(time.Time).UnixNano() / int64(time.Millisecond) // Milliseconds precision.
-					stream.WriteVal(vTyped)
-				case isFloat:
-					// For float and nullable float we check whether a value is a special
-					// entity (NaN, -Inf, +Inf) not supported by JSON spec, we then encode this
-					// information into a separate field to restore on a consumer side (setting
-					// null to the entity position in data). Since we are using f.ConcreteAt
-					// above the value is always float64 or float32 types, and never a *float64
-					// or *float32.
-					var f64 float64
-					switch vt := v.(type) {
-					case float64:
-						f64 = vt
-					case float32:
-						f64 = float64(vt)
-					default:
-						stream.Error = fmt.Errorf("unsupported float type: %T", v)
-						return
-					}
-					if entityType, found := isSpecialEntity(f64); found {
-						if entities[fidx] == nil {
-							entities[fidx] = &fieldEntityLookup{}
+			stream.WriteArrayStart()
+			for fidx, f := range frame.Fields {
+				if fidx > 0 {
+					stream.WriteRaw(",")
+				}
+				if writeValueOrAddEntity(stream, f, i, fidx, entities) {
+					entityCount++
+				}
+			}
+			stream.WriteArrayEnd()
+		}
+		stream.WriteArrayEnd()
+
+	case FrameJSONObjects:
+		stream.WriteObjectField("valuesEX") // ?? name
+		stream.WriteArrayStart()
+		for i := 0; i < rowCount; i++ {
+			if i > 0 {
+				stream.WriteMore()
+			}
+			stream.WriteObjectStart()
+
+			for fidx, f := range frame.Fields {
+				if fidx > 0 {
+					stream.WriteMore()
+				}
+				stream.WriteObjectField(f.Name)
+				if writeValueOrAddEntity(stream, f, i, fidx, entities) {
+					entityCount++
+				}
+			}
+			stream.WriteObjectEnd()
+		}
+		stream.WriteArrayEnd()
+
+	// Columnar
+	default:
+		stream.WriteObjectField("values")
+		stream.WriteArrayStart()
+		for fidx, f := range frame.Fields {
+			if fidx > 0 {
+				stream.WriteMore()
+			}
+			isTime := f.Type().Time()
+			isFloat := f.Type() == FieldTypeFloat64 || f.Type() == FieldTypeNullableFloat64 ||
+				f.Type() == FieldTypeFloat32 || f.Type() == FieldTypeNullableFloat32
+
+			stream.WriteArrayStart()
+			for i := 0; i < rowCount; i++ {
+				if i > 0 {
+					stream.WriteRaw(",")
+				}
+				if v, ok := f.ConcreteAt(i); ok {
+					switch {
+					case isTime:
+						vTyped := v.(time.Time).UnixNano() / int64(time.Millisecond) // Milliseconds precision.
+						stream.WriteVal(vTyped)
+					case isFloat:
+						// For float and nullable float we check whether a value is a special
+						// entity (NaN, -Inf, +Inf) not supported by JSON spec, we then encode this
+						// information into a separate field to restore on a consumer side (setting
+						// null to the entity position in data). Since we are using f.ConcreteAt
+						// above the value is always float64 or float32 types, and never a *float64
+						// or *float32.
+						var f64 float64
+						switch vt := v.(type) {
+						case float64:
+							f64 = vt
+						case float32:
+							f64 = float64(vt)
+						default:
+							stream.Error = fmt.Errorf("unsupported float type: %T", v)
+							return
 						}
-						entities[fidx].add(entityType, i)
-						entityCount++
-						stream.WriteNil()
-					} else {
+						if entityType, found := isSpecialEntity(f64); found {
+							if entities[fidx] == nil {
+								entities[fidx] = &fieldEntityLookup{}
+							}
+							entities[fidx].add(entityType, i)
+							entityCount++
+							stream.WriteNil()
+						} else {
+							stream.WriteVal(v)
+						}
+					default:
 						stream.WriteVal(v)
 					}
-				default:
-					stream.WriteVal(v)
+				} else {
+					stream.WriteNil()
 				}
-			} else {
-				stream.WriteNil()
 			}
+			stream.WriteArrayEnd()
 		}
 		stream.WriteArrayEnd()
 	}
-	stream.WriteArrayEnd()
 
 	if entityCount > 0 {
 		stream.WriteMore()
@@ -831,6 +893,38 @@ func writeDataFrameData(frame *Frame, stream *jsoniter.Stream) {
 	}
 
 	stream.WriteObjectEnd()
+}
+
+func writeValueOrAddEntity(stream *jsoniter.Stream, f *Field, idx int, fidx int, entities []*fieldEntityLookup) bool {
+	if v, ok := f.ConcreteAt(idx); ok {
+		switch f.Type() {
+		case FieldTypeTime, FieldTypeNullableTime:
+			v = v.(time.Time).UnixNano() / int64(time.Millisecond) // Milliseconds precision.
+		case FieldTypeFloat64, FieldTypeNullableFloat64, FieldTypeFloat32, FieldTypeNullableFloat32:
+			var f64 float64
+			switch vt := v.(type) {
+			case float64:
+				f64 = vt
+			case float32:
+				f64 = float64(vt)
+			default:
+				stream.Error = fmt.Errorf("unsupported float type: %T", v)
+				return false
+			}
+			if entityType, found := isSpecialEntity(f64); found {
+				if entities[fidx] == nil {
+					entities[fidx] = &fieldEntityLookup{}
+				}
+				entities[fidx].add(entityType, idx)
+				stream.WriteNil()
+				return true
+			}
+		}
+		stream.WriteVal(v)
+	} else {
+		stream.WriteNil()
+	}
+	return false
 }
 
 // ArrowBufferToJSON writes a frame to JSON

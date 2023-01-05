@@ -64,6 +64,23 @@ func TestGoldenFrameJSON(t *testing.T) {
 	}
 }
 
+func TestProjections(t *testing.T) {
+	f := goldenDF()
+
+	b1, err := data.FrameToJSONProjection(f, data.IncludeAll, data.FrameJSONObjects)
+	require.NoError(t, err)
+
+	b2, err := data.FrameToJSONProjection(f, data.IncludeAll, data.FrameJSONRows)
+	require.NoError(t, err)
+	fmt.Println(`{ "FIRST": `)
+	fmt.Println(string(b1))
+	fmt.Println(`, "SECOND": `)
+	fmt.Println(string(b2))
+	fmt.Println(`}`)
+
+	t.Fail()
+}
+
 type simpleTestObj struct {
 	Name   string          `json:"name,omitempty"`
 	FType  data.FieldType  `json:"type,omitempty"`

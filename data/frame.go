@@ -59,7 +59,7 @@ func (f *Frame) MarshalJSON() ([]byte, error) {
 	stream := cfg.BorrowStream(nil)
 	defer cfg.ReturnStream(stream)
 
-	writeDataFrame(f, stream, true, true)
+	writeDataFrame(f, stream, true, true, FrameJSONColumns)
 	if stream.Error != nil {
 		return nil, stream.Error
 	}
