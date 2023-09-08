@@ -183,7 +183,7 @@ func GracefulStandaloneServe(dsopts ServeOpts, info standalone.ServerSettings) e
 	}
 
 	// Start the GRPC server and handle graceful shutdown to ensure we execute deferred functions correctly
-	log.DefaultLogger.Debug("Standalone plugin server", "capabilities", plugKeys)
+	log.DefaultLogger.Debug("Standalone plugin server", "address", info.Address, "capabilities", plugKeys)
 	listener, err := net.Listen("tcp", info.Address)
 	if err != nil {
 		return err
@@ -285,7 +285,7 @@ func TestStandaloneServe(opts ServeOpts, address string) (*grpc.Server, error) {
 	}
 
 	// Start the GRPC server and handle graceful shutdown to ensure we execute deferred functions correctly
-	log.DefaultLogger.Info("Standalone plugin server", "capabilities", plugKeys)
+	log.DefaultLogger.Info("Test standalone plugin server", "capabilities", plugKeys)
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, err
