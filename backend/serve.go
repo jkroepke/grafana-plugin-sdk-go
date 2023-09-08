@@ -119,38 +119,37 @@ func GracefulStandaloneServe(dsopts ServeOpts, info standalone.ServerSettings) e
 		return errors.New("standalone address must be specified")
 	}
 
-	if info.Dir == "" {
-		return errors.New("directory must be specified")
-	}
-
-	// Write the address and PID to local files
-	log.DefaultLogger.Info("Creating standalone address and pid files", "dir", info.Dir)
-	if err := standalone.CreateStandaloneAddressFile(info.Address, info.Dir); err != nil {
-		return fmt.Errorf("create standalone address file: %w", err)
-	}
-	if err := standalone.CreateStandalonePIDFile(os.Getpid(), info.Dir); err != nil {
-		return fmt.Errorf("create standalone pid file: %w", err)
-	}
-
-	// sadly vs-code can not listen to shutdown events
-	// https://github.com/golang/vscode-go/issues/120
-
-	// Cleanup function that deletes standalone.txt and pid.txt, if it exists. Fails silently.
-	// This is so the address file is deleted when the plugin shuts down gracefully, if possible.
-	defer func() {
-		log.DefaultLogger.Info("Cleaning up standalone address and pid files")
-		if err := standalone.CleanupStandaloneAddressFile(info); err != nil {
-			log.DefaultLogger.Error("Error while cleaning up standalone address file", "error", err)
+	// When directory is set, it will manage the file settings within that folder
+	if info.Dir != "" {
+		// Write the address and PID to local files
+		log.DefaultLogger.Info("Creating standalone address and pid files", "dir", info.Dir)
+		if err := standalone.CreateStandaloneAddressFile(info.Address, info.Dir); err != nil {
+			return fmt.Errorf("create standalone address file: %w", err)
 		}
-		if err := standalone.CleanupStandalonePIDFile(info); err != nil {
-			log.DefaultLogger.Error("Error while cleaning up standalone pid file", "error", err)
+		if err := standalone.CreateStandalonePIDFile(os.Getpid(), info.Dir); err != nil {
+			return fmt.Errorf("create standalone pid file: %w", err)
 		}
-		// Kill the dummy locator so Grafana reloads the plugin
+
+		// sadly vs-code can not listen to shutdown events
+		// https://github.com/golang/vscode-go/issues/120
+
+		// Cleanup function that deletes standalone.txt and pid.txt, if it exists. Fails silently.
+		// This is so the address file is deleted when the plugin shuts down gracefully, if possible.
+		defer func() {
+			log.DefaultLogger.Info("Cleaning up standalone address and pid files")
+			if err := standalone.CleanupStandaloneAddressFile(info); err != nil {
+				log.DefaultLogger.Error("Error while cleaning up standalone address file", "error", err)
+			}
+			if err := standalone.CleanupStandalonePIDFile(info); err != nil {
+				log.DefaultLogger.Error("Error while cleaning up standalone pid file", "error", err)
+			}
+			// Kill the dummy locator so Grafana reloads the plugin
+			standalone.FindAndKillCurrentPlugin(info.Dir)
+		}()
+
+		// When debugging, be sure to kill the running instances, so that we can reconnect
 		standalone.FindAndKillCurrentPlugin(info.Dir)
-	}()
-
-	// When debugging, be sure to kill the running instances, so that we can reconnect
-	standalone.FindAndKillCurrentPlugin(info.Dir)
+	}
 
 	// Start GRPC server
 	pluginOpts := asGRPCServeOpts(dsopts)

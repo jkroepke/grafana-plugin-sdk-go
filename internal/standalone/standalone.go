@@ -20,6 +20,7 @@ import (
 
 var (
 	standaloneEnabled = flag.Bool("standalone", false, "should this run standalone")
+	standaloneAddress = flag.String("address", "", "grpc address")
 )
 
 func NewServerSettings(address, dir string) ServerSettings {
@@ -44,6 +45,10 @@ func ServerModeEnabled(pluginID string) (ServerSettings, bool) {
 	flag.Parse() // Parse the flags so that we can check values for -standalone
 
 	if *standaloneEnabled {
+		if standaloneAddress != nil && *standaloneAddress != "" {
+			return ServerSettings{Address: *standaloneAddress}, true
+		}
+
 		s, err := serverSettings(pluginID)
 		if err != nil {
 			log.Printf("Error: %s", err.Error())
