@@ -6,7 +6,6 @@ go 1.21
 replace github.com/getkin/kin-openapi => github.com/getkin/kin-openapi v0.120.0
 
 require (
-	k8s.io/apimachinery v0.29.2
 	k8s.io/kube-openapi v0.0.0-20240220201932-37d671a357a5
 )
 
